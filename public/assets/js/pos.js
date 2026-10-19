@@ -86,6 +86,7 @@
     cat: 'all',                     // selected category id or 'all'
     multiplier: 1,                  // quantity for the next item ("3*" on the scanner or the Qty button)
     pending: [],                    // items tapped / scanned whose server reply has not arrived yet (shown greyed)
+    highlight: null,                // {item_id, uom_id} of the line last tapped / scanned: highlighted and scrolled into view
     queue: Promise.resolve(),       // sale changes run one after another (fast taps / scans never get lost)
     installPrompt: null,            // Chrome's "install app" event, when available
   };
@@ -231,6 +232,7 @@
     S.pane = pane;
     S.multiplier = 1;
     S.pending = [];
+    S.highlight = null;
     $('#pos-search').value = '';
     render();
     if (finePointer) $('#pos-search').focus();   // never on tablets: it would pop the keyboard
@@ -274,6 +276,7 @@
     if (S.multiplier !== 1) { S.multiplier = 1; renderMultiplier(); }
     if (menuItem && menuItem.item_type === 'product' && menuItem.stock_qty <= 0) App.toast(`${menuItem.name}: out of stock in the system`, 'info');
     // Show the line at once (greyed) while the server records it: on a remote database the reply takes a moment
+    S.highlight = { item_id: data.item_id, uom_id: data.uom_id || null };
     pend = pend || showPending(menuItem ? menuItem.name : 'Item', qty, menuItem ? menuItem.price : null, menuItem ? menuItem.uom : '');
     Object.assign(pend, { qty, price: menuItem ? menuItem.price : pend.price, uom: menuItem ? menuItem.uom : pend.uom, name: menuItem ? menuItem.name : pend.name });
     renderOrder();
@@ -488,8 +491,9 @@
     const t = S.sale;
     if (S.view !== 'sale' || !t) return;
     const active = activeLines(t);
+    const hl = (l) => S.highlight && l.item_id === S.highlight.item_id && (l.uom_id || null) === S.highlight.uom_id;
     const lines = t.items.map((l) => `
-      <div class="tline" data-act="line" data-id="${l.id}">
+      <div class="tline${hl(l) ? ' selected flash' : ''}" data-act="line" data-id="${l.id}">
         <span class="tline-qty">${qtyStr(l.qty)}<small>${esc(l.uom_label || '')}</small></span>
         <div>
           <div class="tline-name">${esc(l.name)}${l.rx_required ? ' <span class="badge badge-red">Rx</span>' : ''}${l.vat_exempt ? ' <span class="badge badge-gray">VAT-ex</span>' : ''}</div>
@@ -516,7 +520,7 @@
         <div class="muted small">${esc(sub)}${t.notes ? ' · ' + esc(t.notes) : ''}</div>
       </div>
       <div class="ticket-lines">${lines}${S.pending.map((p) => `
-        <div class="tline pending"><span class="tline-qty">${qtyStr(p.qty)}<small>${esc(p.uom || '')}</small></span>
+        <div class="tline pending selected"><span class="tline-qty">${qtyStr(p.qty)}<small>${esc(p.uom || '')}</small></span>
           <div><div class="tline-name">${esc(p.name)}</div><div class="muted small">adding…</div></div>
           <span class="tline-amt">${p.price !== null && p.price !== undefined ? money(p.price * p.qty) : '…'}</span></div>`).join('')}${lines || S.pending.length ? '' : '<div class="empty">Scan a barcode or tap items to add them.</div>'}</div>
       <div class="ticket-totals">
@@ -534,6 +538,9 @@
         <button type="button" class="btn btn-danger" data-act="cancel" ${off(active.length)}>Cancel sale</button>
         ${can('pos.settle') ? `<button type="button" class="btn btn-success pay" data-act="pay" ${off(active.length)}>PAY ${peso(t.total)}</button>` : ''}
       </div>`;
+    // Follow the line just tapped / scanned (the pending placeholder while it is being added, then the real line)
+    const follow = [...$('#order-pane').querySelectorAll('.tline.selected')].pop();
+    if (follow) follow.scrollIntoView({ block: 'nearest' });
     renderBottom();
   }
 
@@ -1658,7 +1665,10 @@
     resume: (b) => resumeSale(Number(b.dataset.id)),
     cardMenu: (b) => cardMenu(Number(b.dataset.id)),
     details: detailsDialog,
-    line: (b) => S.queue.then(() => { const l = S.sale && S.sale.items.find((i) => i.id === Number(b.dataset.id)); if (l) lineDialog(l); }),
+    line: (b) => S.queue.then(() => {
+      const l = S.sale && S.sale.items.find((i) => i.id === Number(b.dataset.id));
+      if (l) { S.highlight = { item_id: l.item_id, uom_id: l.uom_id || null }; renderOrder(); lineDialog(l); }
+    }),
     discount: () => S.queue.then(discountDialog),
     hold: holdSale,
     quote: () => S.queue.then(() => { if (activeLines(S.sale).length) Print.receipt(S.sale, false); }),

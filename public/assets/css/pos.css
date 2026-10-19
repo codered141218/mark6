@@ -301,3 +301,7 @@ html.kb-open .pos.searching .qty-btn { display: none; }
 .split-q.btn { min-width: 56px; font-weight: 800; }
 .tline.pending { opacity: .6; cursor: default; }
 .tline.pending .tline-qty { background: var(--amber-soft); }
+/* the line just tapped / scanned: highlighted, with a short flash so the eye finds it */
+.tline.selected { background: var(--brand-soft); box-shadow: inset 3px 0 0 var(--brand); }
+.tline.flash { animation: tline-flash .9s ease-out; }
+@keyframes tline-flash { 0% { background: #fed7aa; } 100% { background: var(--brand-soft); } }
