@@ -46,6 +46,7 @@ if ($url = $env('DATABASE_URL') ?? $env('SUPABASE_DB_URL') ?? $env('POSTGRES_URL
 foreach (['DB_HOST' => 'host', 'DB_PORT' => 'port', 'DB_NAME' => 'database', 'DB_USER' => 'username', 'DB_PASSWORD' => 'password', 'DB_SCHEMA' => 'schema', 'DB_SSLMODE' => 'sslmode'] as $k => $key) {
     if (($v = $env($k)) !== null) { $config['db'][$key] = $key === 'port' ? (int) $v : $v; $configured = $configured || in_array($key, ['host', 'database'], true); }
 }
+if (($v = $env('DB_PERSISTENT')) !== null) $config['db']['persistent'] = in_array(strtolower($v), ['1', 'true', 'yes', 'on'], true);
 if (($v = $env('APP_TIMEZONE')) !== null) $config['app']['timezone'] = $v;
 if (($v = $env('APP_DEBUG')) !== null) $config['app']['debug'] = in_array(strtolower($v), ['1', 'true', 'yes', 'on'], true);
 if (($v = $env('APP_BASE_PATH')) !== null) $config['app']['base_path'] = $v;

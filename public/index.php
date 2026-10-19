@@ -55,7 +55,11 @@ $router = new Router();
 if (!$GLOBALS['__installed'] || !App\Services\Installer::isInstalled()) {
     require BASE_PATH . '/app/routes/install.php';
 } else {
-    App\Services\Migrations::runIfNeeded();   // upgrade older databases automatically
+    // Upgrade older databases automatically; checked once per login session, not on every page
+    if (($_SESSION['__db_version'] ?? 0) < App\Services\Migrations::latest()) {
+        App\Services\Migrations::runIfNeeded();
+        $_SESSION['__db_version'] = App\Services\Migrations::latest();
+    }
     foreach (glob(BASE_PATH . '/app/routes/*.php') as $routeFile) {
         if (basename($routeFile) !== 'install.php') require $routeFile;
     }

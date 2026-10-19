@@ -39,15 +39,18 @@ class DB
     {
         if (self::$pdo === null) {
             $c = self::$config;
+            // Web requests reuse the connection of the Apache worker (persistent): a remote database such as
+            // Supabase then costs no TLS handshake + login on every page. CLI scripts and tests connect fresh.
+            $persistent = $c['persistent'] ?? (PHP_SAPI !== 'cli');
             self::$pdo = new PDO(self::dsn($c['database']), $c['username'], $c['password'], [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                 PDO::ATTR_EMULATE_PREPARES => true,
                 PDO::ATTR_STRINGIFY_FETCHES => false,
+                PDO::ATTR_PERSISTENT => (bool) $persistent,
             ]);
-            // Keep NOW()/CURRENT_DATE in the same timezone as PHP, and work inside the configured schema.
-            self::$pdo->exec("SET TIME ZONE '" . (new \DateTime())->format('P') . "'");
-            self::$pdo->exec('SET search_path TO ' . self::quoteIdent(self::schema()) . ', public');
+            // Keep NOW()/CURRENT_DATE in the same timezone as PHP, and work inside the configured schema (one round trip).
+            self::$pdo->exec("SET TIME ZONE '" . (new \DateTime())->format('P') . "'; SET search_path TO " . self::quoteIdent(self::schema()) . ', public');
         }
         return self::$pdo;
     }
