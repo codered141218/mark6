@@ -298,3 +298,5 @@ html.kb-open .pos.searching .qty-btn { display: none; }
 .tline-qty small { display: block; font-size: 10px; font-weight: 600; color: var(--muted); text-transform: none; }
 .dlg-return { max-width: 640px !important; }
 .split-q.btn { min-width: 56px; font-weight: 800; }
+.tline.pending { opacity: .6; cursor: default; }
+.tline.pending .tline-qty { background: var(--amber-soft); }

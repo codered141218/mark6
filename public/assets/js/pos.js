@@ -85,6 +85,7 @@
     pane: 'menu',                   // phones only: 'menu' | 'order'
     cat: 'all',                     // selected category id or 'all'
     multiplier: 1,                  // quantity for the next item ("3*" on the scanner or the Qty button)
+    pending: [],                    // items tapped / scanned whose server reply has not arrived yet (shown greyed)
     queue: Promise.resolve(),       // sale changes run one after another (fast taps / scans never get lost)
     installPrompt: null,            // Chrome's "install app" event, when available
   };
@@ -229,6 +230,7 @@
     S.view = 'sale';
     S.pane = pane;
     S.multiplier = 1;
+    S.pending = [];
     $('#pos-search').value = '';
     render();
     if (finePointer) $('#pos-search').focus();   // never on tablets: it would pop the keyboard
@@ -265,13 +267,31 @@
    * Add an item to the sale. data = {item_id, uom_id (pack unit or null), qty}; the pending multiplier ("3*") is
    * applied to the first item added after it was set.
    */
-  function addItem(data, menuItem) {
-    if (!S.session) { App.toast('Open the business day first', 'error'); return; }
+  function addItem(data, menuItem, pend = null) {
+    if (!S.session) { App.toast('Open the business day first', 'error'); dropPending(pend); return; }
     if (!S.sale || S.view !== 'sale') newSale();
     const qty = (data.qty || 1) * S.multiplier;
     if (S.multiplier !== 1) { S.multiplier = 1; renderMultiplier(); }
     if (menuItem && menuItem.item_type === 'product' && menuItem.stock_qty <= 0) App.toast(`${menuItem.name}: out of stock in the system`, 'info');
-    mutate((t) => Api.addItem(t.id, { item_id: data.item_id, uom_id: data.uom_id || null, qty })).catch(showError);
+    // Show the line at once (greyed) while the server records it: on a remote database the reply takes a moment
+    pend = pend || showPending(menuItem ? menuItem.name : 'Item', qty, menuItem ? menuItem.price : null, menuItem ? menuItem.uom : '');
+    Object.assign(pend, { qty, price: menuItem ? menuItem.price : pend.price, uom: menuItem ? menuItem.uom : pend.uom, name: menuItem ? menuItem.name : pend.name });
+    renderOrder();
+    mutate((t) => Api.addItem(t.id, { item_id: data.item_id, uom_id: data.uom_id || null, qty }))
+      .then(() => dropPending(pend), (e) => { dropPending(pend); showError(e); });
+  }
+
+  /** A placeholder line in the sale panel until the server confirms the item. */
+  function showPending(name, qty = 1, price = null, uom = '') {
+    const pend = { name, qty, price, uom };
+    S.pending.push(pend);
+    renderOrder();
+    return pend;
+  }
+  function dropPending(pend) {
+    if (!pend) return;
+    S.pending = S.pending.filter((p) => p !== pend);
+    renderOrder();
   }
 
   /** A code typed or scanned into the search box: "3*" sets the quantity, "3*CODE" sells 3, otherwise look the code up. */
@@ -286,18 +306,22 @@
       if (!(qty > 0)) { App.toast('Quantity must be greater than zero', 'error'); return; }
       if (!code) { S.multiplier = qty; renderMultiplier(); App.toast(`Next item × ${qtyStr(qty)}`, 'info'); return; }
     }
+    if (!S.sale || S.view !== 'sale') newSale();
+    const pend = showPending(code, qty);   // the scanned code shows up immediately; the name follows from the lookup
     try {
       const r = await Api.lookup(code);
       if (r.found) {
         const mi = S.menu.items.find((i) => i.id === r.item_id && (i.uom_id || null) === (r.uom_id || null));
-        addItem({ item_id: r.item_id, uom_id: r.uom_id, qty: qty * (r.qty || 1) }, mi);
+        pend.name = r.name;
+        pend.price = r.price;
+        addItem({ item_id: r.item_id, uom_id: r.uom_id, qty: qty * (r.qty || 1) }, mi, pend);
         if (r.scale) App.toast(`${r.name}: ${qtyStr(r.qty)} kg from the scale barcode`, 'info');
         return;
       }
-    } catch (e) { showError(e); return; }
+    } catch (e) { dropPending(pend); showError(e); return; }
     const first = visibleItems()[0];
-    if (first) addItem({ item_id: first.id, uom_id: first.uom_id, qty }, first);
-    else App.toast(`No item matches "${code}"`, 'error');
+    if (first) addItem({ item_id: first.id, uom_id: first.uom_id, qty }, first, pend);
+    else { dropPending(pend); App.toast(`No item matches "${code}"`, 'error'); }
   }
 
   /**
@@ -490,13 +514,16 @@
         </div>
         <div class="muted small">${esc(sub)}${t.notes ? ' · ' + esc(t.notes) : ''}</div>
       </div>
-      <div class="ticket-lines">${lines || '<div class="empty">Scan a barcode or tap items to add them.</div>'}</div>
+      <div class="ticket-lines">${lines}${S.pending.map((p) => `
+        <div class="tline pending"><span class="tline-qty">${qtyStr(p.qty)}<small>${esc(p.uom || '')}</small></span>
+          <div><div class="tline-name">${esc(p.name)}</div><div class="muted small">adding…</div></div>
+          <span class="tline-amt">${p.price !== null && p.price !== undefined ? money(p.price * p.qty) : '…'}</span></div>`).join('')}${lines || S.pending.length ? '' : '<div class="empty">Scan a barcode or tap items to add them.</div>'}</div>
       <div class="ticket-totals">
         <div class="row"><span>Subtotal · ${plural(itemCount(t), 'item')}</span><span>${money(t.subtotal)}</span></div>
         ${t.sc_discount > 0 ? `<div class="row text-green"><span>${esc(scLabel)}</span><span>−${money(t.sc_discount)}</span></div>` : ''}
         ${t.promo_discount > 0 ? `<div class="row text-green"><span>${esc(promoLabel)}</span><span>−${money(t.promo_discount)}</span></div>` : ''}
         ${B.tax.vatRegistered ? `<div class="row muted small"><span>VAT incl. ${money(t.vat_amount)}${t.vat_exempt_sales > 0 ? ' · VAT-exempt ' + money(t.vat_exempt_sales) : ''}</span></div>` : ''}
-        <div class="row grand"><span>TOTAL</span><span>${peso(t.total)}</span></div>
+        <div class="row grand"><span>TOTAL${S.pending.length ? ' <span class="muted small">updating…</span>' : ''}</span><span>${peso(t.total)}</span></div>
       </div>
       <div class="ticket-actions">
         <button type="button" class="btn" data-act="discount" ${off(active.length)}>Discount</button>

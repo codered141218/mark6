@@ -60,6 +60,57 @@ class Tickets
         return $t;
     }
 
+    /** Like getOpen() but one query: the header only, for actions that do not need the lines up front. */
+    private static function assertOpen(int $id): array
+    {
+        $t = DB::one('SELECT id, ticket_no, status, discount_type, sc_details, cash_session_id, business_date FROM tickets WHERE id = ?', [$id]);
+        if (!$t) throw HttpException::notFound('Sale');
+        if ($t['status'] !== 'open') throw HttpException::bad("Sale {$t['ticket_no']} is already {$t['status']}");
+        return $t;
+    }
+
+    /**
+     * Recompute the totals of an open sale and return it: recalc() + get() in four statements instead of seven.
+     * Every POS tap ends here, and on a remote database each statement is a network round trip.
+     */
+    private static function refresh(int $id): array
+    {
+        $t = DB::one(
+            'SELECT t.*, u.full_name AS created_by_name, pu.full_name AS paid_by_name, vu.full_name AS voided_by_name, c.name AS customer_account_name
+             FROM tickets t LEFT JOIN users u ON u.id = t.created_by LEFT JOIN users pu ON pu.id = t.paid_by
+             LEFT JOIN users vu ON vu.id = t.voided_by LEFT JOIN customers c ON c.id = t.customer_id WHERE t.id = ?', [$id]
+        );
+        if (!$t) throw HttpException::notFound('Sale');
+        $lines = DB::all('SELECT ti.*, i.rx_required, i.generic_name FROM ticket_items ti LEFT JOIN items i ON i.id = ti.item_id WHERE ti.ticket_id = ? ORDER BY ti.id', [$id]);
+        $totals = Totals::compute($t, $lines);
+        $lineDiscounts = $totals['line_discounts'];
+        unset($totals['line_discounts'], $totals['line_net'], $totals['line_vat'], $totals['discount_net']);
+        DB::update('tickets', $id, $totals);
+        foreach ($lines as &$l) {
+            $amount = $l['status'] === 'active' ? ($lineDiscounts[(int) $l['id']] ?? 0.0) : 0.0;
+            if (r2($l['discount_amount']) != $amount) {
+                DB::update('ticket_items', (int) $l['id'], ['discount_amount' => $amount]);
+                $l['discount_amount'] = $amount;
+            }
+        }
+        unset($l);
+        $t = array_merge($t, $totals);
+        $t['items'] = $lines;
+        $t['payments'] = DB::all('SELECT * FROM payments WHERE ticket_id = ? ORDER BY id', [$id]);
+        $t['returns'] = $t['status'] === 'paid' || (float) $t['refunded_total'] > 0 ? Returns::listForTicket($id) : [];
+        $t['sc_details'] = json_decode($t['sc_details'] ?? '[]', true) ?: [];
+        return self::numeric($t);
+    }
+
+    private static ?array $uomAbbr = null;
+
+    /** Abbreviation of a unit (the whole uoms table is small: loaded once per request). */
+    private static function uomAbbr(int $uomId): string
+    {
+        self::$uomAbbr ??= array_column(DB::all('SELECT id, abbr FROM uoms'), 'abbr', 'id');
+        return (string) (self::$uomAbbr[$uomId] ?? '');
+    }
+
     /** Held (open) sales for the POS. */
     public static function openList(): array
     {
@@ -99,21 +150,20 @@ class Tickets
 
     public static function update(int $id, array $data): array
     {
-        self::getOpen($id);
+        self::assertOpen($id);
         $upd = [];
         if (array_key_exists('customer_name', $data)) $upd['customer_name'] = trim((string) $data['customer_name']) ?: null;
         if (array_key_exists('customer_id', $data)) $upd['customer_id'] = $data['customer_id'] ? (int) $data['customer_id'] : null;
         if (array_key_exists('notes', $data)) $upd['notes'] = trim((string) $data['notes']) ?: null;
         if (array_key_exists('rx_note', $data)) $upd['rx_note'] = trim((string) $data['rx_note']) ?: null;
         DB::update('tickets', $id, $upd);
-        self::recalc($id);
-        return self::get($id);
+        return self::refresh($id);
     }
 
     /** Unit the line is sold in: base unit, or a pack unit of the item (1 box = 100 tab) with its own price. */
     private static function unitFor(array $item, $uomId): array
     {
-        $base = ['uom_id' => null, 'factor' => 1.0, 'label' => (string) DB::value('SELECT abbr FROM uoms WHERE id = ?', [$item['base_uom_id']]), 'price' => null];
+        $base = ['uom_id' => null, 'factor' => 1.0, 'label' => self::uomAbbr((int) $item['base_uom_id']), 'price' => null];
         if (!$uomId || (int) $uomId === (int) $item['base_uom_id']) return $base;
         $p = DB::one('SELECT iu.*, u.abbr FROM item_uoms iu JOIN uoms u ON u.id = iu.uom_id WHERE iu.item_id = ? AND iu.uom_id = ?', [$item['id'], (int) $uomId]);
         if (!$p) throw HttpException::bad("{$item['name']} is not sold in that unit");
@@ -142,18 +192,20 @@ class Tickets
      */
     public static function addItem(int $id, int $itemId, float $qty = 1, ?string $notes = null, $price = null, ?string $pin = null, $uomId = null): array
     {
-        $t = self::getOpen($id);
+        self::assertOpen($id);
         $item = Inventory::item($itemId);
         if (!$item['active'] || !$item['sellable']) throw HttpException::bad("{$item['name']} is not available for sale");
         if (!($qty > 0)) throw HttpException::bad('Quantity must be greater than zero');
         $unit = self::unitFor($item, $uomId);
         $notes = trim((string) $notes) ?: null;
         $override = $price !== null && $price !== '';
-        $existing = DB::one(
-            "SELECT * FROM ticket_items WHERE ticket_id = ? AND item_id = ? AND status = 'active' AND COALESCE(uom_id, 0) = ? AND COALESCE(notes,'') = ? AND discount_kind IS NULL"
-            . ($override ? ' AND price = ?' : '') . ' ORDER BY id LIMIT 1',
-            array_merge([$id, $itemId, (int) ($unit['uom_id'] ?? 0), $notes ?? ''], $override ? [r2($price)] : [])
-        );
+        // The item's lines on this sale: the one to merge into, and the quantity on the other lines (stock check)
+        $itemLines = DB::all("SELECT * FROM ticket_items WHERE ticket_id = ? AND item_id = ? AND status = 'active' ORDER BY id", [$id, $itemId]);
+        $existing = null;
+        foreach ($itemLines as $l) {
+            if ((int) ($l['uom_id'] ?? 0) === (int) ($unit['uom_id'] ?? 0) && (string) ($l['notes'] ?? '') === ($notes ?? '') && $l['discount_kind'] === null
+                && (!$override || r2($l['price']) == r2($price))) { $existing = $l; break; }
+        }
         $newQty = ($existing ? (float) $existing['qty'] : 0) + $qty;
         if ($override) {
             if (r2($price) != self::autoPrice($item, $unit, $newQty)) Auth::authorize('pos.discount', $pin);   // price override needs discount rights
@@ -163,7 +215,7 @@ class Tickets
             // A line whose price was overridden keeps its price; only an automatically priced line follows the wholesale rule
             if ($existing && r2($existing['price']) != self::autoPrice($item, $unit, (float) $existing['qty'])) $unitPrice = (float) $existing['price'];
         }
-        $otherBase = (float) DB::value("SELECT COALESCE(SUM(qty * factor),0) FROM ticket_items WHERE ticket_id = ? AND item_id = ? AND status = 'active' AND id <> ?", [$id, $itemId, (int) ($existing['id'] ?? 0)]);
+        $otherBase = array_sum(array_map(fn ($l) => $existing && $l['id'] === $existing['id'] ? 0 : (float) $l['qty'] * (float) $l['factor'], $itemLines));
         self::checkStock($item, $otherBase + $newQty * $unit['factor']);
 
         if ($existing) {
@@ -175,8 +227,7 @@ class Tickets
                 'notes' => $notes, 'status' => 'active', 'created_by' => Auth::id(), 'created_at' => now(),
             ]);
         }
-        self::recalc($id);
-        return self::get($id);
+        return self::refresh($id);
     }
 
     private static function line(int $ticketId, int $lineId): array
@@ -189,7 +240,7 @@ class Tickets
     /** Change quantity / notes / price of a line. A price change needs pos.discount or a manager PIN. */
     public static function updateLine(int $id, int $lineId, array $data, ?string $pin = null): array
     {
-        self::getOpen($id);
+        self::assertOpen($id);
         $l = self::line($id, $lineId);
         $item = Inventory::item((int) $l['item_id']);
         $qty = isset($data['qty']) && $data['qty'] !== '' ? (float) $data['qty'] : (float) $l['qty'];
@@ -207,20 +258,18 @@ class Tickets
         $upd = ['qty' => $qty, 'price' => $price, 'line_total' => r2($qty * $price)];
         if (array_key_exists('notes', $data)) $upd['notes'] = trim((string) $data['notes']) ?: null;
         DB::update('ticket_items', (int) $l['id'], $upd);
-        self::recalc($id);
-        return self::get($id);
+        return self::refresh($id);
     }
 
     /** Remove a line from an open sale. */
     public static function voidLine(int $id, int $lineId, ?string $reason = null, ?string $pin = null): array
     {
-        self::getOpen($id);
+        self::assertOpen($id);
         $l = self::line($id, $lineId);
         DB::run('DELETE FROM ticket_items WHERE id = ?', [$lineId]);
         self::syncScPeople($id);
-        self::recalc($id);
         Audit::log('remove_item', 'ticket', $id, ['line' => $l['name'], 'qty' => $l['qty']]);
-        return self::get($id);
+        return self::refresh($id);
     }
 
     /**
@@ -238,9 +287,8 @@ class Tickets
             $upd = ['discount_type' => 'none', 'discount_id' => null, 'discount_name' => null, 'discount_rate' => 0];
             if (!$hasItemSc) $upd += ['sc_count' => 0, 'sc_details' => null];
             DB::update('tickets', $id, $upd);
-            self::recalc($id);
             Audit::log('discount', 'ticket', $id, ['type' => 'none']);
-            return self::get($id);
+            return self::refresh($id);
         }
         if ($disc['requires_approval']) Auth::authorize('pos.discount', $pin);
         $upd = ['discount_type' => $disc['kind'], 'discount_id' => $disc['id'], 'discount_name' => $disc['name'], 'discount_rate' => 0];
@@ -260,9 +308,8 @@ class Tickets
             $upd['discount_rate'] = $rate;
         }
         DB::update('tickets', $id, $upd);
-        self::recalc($id);
         Audit::log('discount', 'ticket', $id, ['name' => $disc['name'], 'type' => $disc['kind'], 'rate' => $upd['discount_rate'], 'sc_count' => $upd['sc_count'] ?? null]);
-        return self::get($id);
+        return self::refresh($id);
     }
 
     /**
@@ -271,15 +318,14 @@ class Tickets
      */
     public static function discountLine(int $id, int $lineId, array $d, ?string $pin = null): array
     {
-        $t = self::getOpen($id);
+        $t = self::assertOpen($id);
         $l = self::line($id, $lineId);
         $disc = Discounts::resolve($d, 'item');
         if (!$disc) {
             DB::update('ticket_items', $lineId, ['discount_id' => null, 'discount_name' => null, 'discount_kind' => null, 'discount_value' => 0, 'discount_amount' => 0]);
             self::syncScPeople($id);
-            self::recalc($id);
             Audit::log('discount_item', 'ticket', $id, ['line' => $l['name'], 'type' => 'none']);
-            return self::get($id);
+            return self::refresh($id);
         }
         if (in_array($t['discount_type'], ['sc', 'pwd'], true)) {
             throw HttpException::bad('This receipt already has a Senior Citizen / PWD discount on the whole receipt. Remove it first to discount single items.');
@@ -300,9 +346,8 @@ class Tickets
             if ($disc['kind'] === 'percent' && $value > 100) throw HttpException::bad('Discount cannot exceed 100%');
         }
         DB::update('ticket_items', $lineId, ['discount_id' => $disc['id'], 'discount_name' => $disc['name'], 'discount_kind' => $disc['kind'], 'discount_value' => $value]);
-        self::recalc($id);
         Audit::log('discount_item', 'ticket', $id, ['line' => $l['name'], 'name' => $disc['name'], 'type' => $disc['kind'], 'value' => $value]);
-        return self::get($id);
+        return self::refresh($id);
     }
 
     /** Clean list of [name, id_no] pairs; both are required. */

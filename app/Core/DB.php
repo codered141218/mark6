@@ -22,6 +22,8 @@ class DB
     private static ?PDO $pdo = null;
     private static int $txDepth = 0;
     private static array $config = [];
+    /** Number of statements run so far (profiling / tests). */
+    public static int $queries = 0;
 
     public static function configure(array $config): void
     {
@@ -90,6 +92,7 @@ class DB
 
     public static function query(string $sql, array $params = []): \PDOStatement
     {
+        self::$queries++;
         $stmt = self::pdo()->prepare($sql);
         foreach (array_values($params) as $i => $v) {
             $type = is_int($v) ? PDO::PARAM_INT : (is_null($v) ? PDO::PARAM_NULL : PDO::PARAM_STR);
