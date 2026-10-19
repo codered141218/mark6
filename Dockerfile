@@ -5,7 +5,8 @@ FROM php:8.3-apache
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libpq-dev libzip-dev unzip \
  && docker-php-ext-install -j"$(nproc)" pdo_pgsql pgsql zip opcache \
- && a2enmod rewrite headers \
+ && a2dismod mpm_event mpm_worker 2>/dev/null || true \
+ && a2enmod mpm_prefork rewrite headers \
  && rm -rf /var/lib/apt/lists/*
 
 COPY docker/php.ini /usr/local/etc/php/conf.d/mark6.ini
