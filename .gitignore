@@ -1,0 +1,11 @@
+/config/config.php
+/storage/backups/*
+!/storage/backups/.gitkeep
+/storage/logs/*
+!/storage/logs/.gitkeep
+/vendor/
+/node_modules/
+.env
+.env.local
+.DS_Store
+Thumbs.db

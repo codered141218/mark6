@@ -1,0 +1,11 @@
+.git
+.gitignore
+config/config.php
+storage/backups/*
+storage/logs/*
+tests
+node_modules
+*.md
+!README.md
+.env
+.env.*

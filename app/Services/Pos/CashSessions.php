@@ -1,0 +1,188 @@
+<?php
+namespace App\Services\Pos;
+
+use App\Core\Auth;
+use App\Core\DB;
+use App\Core\HttpException;
+use App\Services\Audit;
+use App\Services\Ledger;
+
+/**
+ * Business day / cash drawer.
+ * Open with the beginning cash, sell, then close with a cash count. The X-reading (mid-day) and
+ * Z-reading (end of day) both come from report(). Any shortage/overage is posted to the GL on close.
+ */
+class CashSessions
+{
+    public const PAYMENT_METHODS = [
+        'cash' => ['label' => 'Cash', 'account' => 'cash_on_hand'],
+        'card' => ['label' => 'Credit/Debit Card', 'account' => 'card_clearing'],
+        'gcash' => ['label' => 'GCash', 'account' => 'ewallet_clearing'],
+        'maya' => ['label' => 'Maya', 'account' => 'ewallet_clearing'],
+        'bank_transfer' => ['label' => 'Bank Transfer / InstaPay', 'account' => 'ewallet_clearing'],
+        'charge' => ['label' => 'Charge to Account', 'account' => 'ar'],
+    ];
+
+    public const DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1, 0.25, 0.1, 0.05];
+
+    public static function current(): ?array
+    {
+        return DB::one("SELECT * FROM cash_sessions WHERE status = 'open' ORDER BY id DESC LIMIT 1");
+    }
+
+    public static function requireOpen(): array
+    {
+        $s = self::current();
+        if (!$s) throw HttpException::bad('The business day is not open yet. Open the day with the beginning cash first.');
+        return $s;
+    }
+
+    public static function open(float $openingCash, ?string $businessDate = null, ?array $denominations = null, ?string $notes = null): array
+    {
+        return DB::transaction(function () use ($openingCash, $businessDate, $denominations, $notes) {
+            if (DB::one("SELECT id FROM cash_sessions WHERE status = 'open' FOR UPDATE")) throw HttpException::bad('A business day is already open');
+            if ($openingCash < 0) throw HttpException::bad('Beginning cash cannot be negative');
+            $id = DB::insert('cash_sessions', [
+                'business_date' => is_date($businessDate) ? $businessDate : today(), 'status' => 'open',
+                'opened_by' => Auth::id(), 'opened_at' => now(), 'opening_cash' => r2($openingCash),
+                'denominations' => $denominations ? json_encode(['opening' => $denominations]) : null, 'notes' => $notes,
+            ]);
+            Audit::log('open_day', 'cash_session', $id, ['opening' => $openingCash]);
+            return DB::one('SELECT * FROM cash_sessions WHERE id = ?', [$id]);
+        });
+    }
+
+    /** X / Z reading data for a business day. */
+    public static function report(int $sessionId): array
+    {
+        $s = DB::one(
+            'SELECT s.*, ou.full_name AS opened_by_name, cu.full_name AS closed_by_name FROM cash_sessions s
+             LEFT JOIN users ou ON ou.id = s.opened_by LEFT JOIN users cu ON cu.id = s.closed_by WHERE s.id = ?', [$sessionId]
+        );
+        if (!$s) throw HttpException::notFound('Business day');
+        $sales = DB::one(
+            "SELECT COUNT(*) AS cnt, COALESCE(SUM(subtotal),0) AS gross, COALESCE(SUM(discount_amount),0) AS discounts,
+                    COALESCE(SUM(vatable_sales),0) AS vatable, COALESCE(SUM(vat_amount),0) AS vat,
+                    COALESCE(SUM(vat_exempt_sales),0) AS exempt, COALESCE(SUM(total),0) AS net,
+                    MIN(receipt_no) AS first_or, MAX(receipt_no) AS last_or
+             FROM tickets WHERE cash_session_id = ? AND status = 'paid'", [$sessionId]
+        );
+        foreach (['gross', 'discounts', 'vatable', 'vat', 'exempt', 'net'] as $k) $sales[$k] = r2($sales[$k]);
+        $sales['cnt'] = (int) $sales['cnt'];
+        $sales['items'] = r4(DB::value("SELECT COALESCE(SUM(i.qty),0) FROM ticket_items i JOIN tickets t ON t.id = i.ticket_id WHERE t.cash_session_id = ? AND t.status = 'paid' AND i.status = 'active'", [$sessionId]));
+        $voided = DB::one("SELECT COUNT(*) AS cnt, COALESCE(SUM(total),0) AS amount FROM tickets WHERE cash_session_id = ? AND status = 'void' AND receipt_no IS NOT NULL", [$sessionId]);
+        $cancelled = (int) DB::value("SELECT COUNT(*) FROM tickets WHERE cash_session_id = ? AND status = 'void' AND receipt_no IS NULL", [$sessionId]);
+        $returns = Returns::sessionTotals($sessionId);
+        $discounts = self::discountSummary($sessionId);
+        $payments = array_map(fn ($p) => ['cnt' => (int) $p['cnt'], 'amount' => r2($p['amount'])] + $p + ['label' => self::PAYMENT_METHODS[$p['method']]['label'] ?? $p['method']], DB::all(
+            "SELECT p.method, COUNT(*) AS cnt, SUM(p.amount) AS amount FROM payments p JOIN tickets t ON t.id = p.ticket_id
+             WHERE t.cash_session_id = ? AND t.status = 'paid' GROUP BY p.method ORDER BY amount DESC", [$sessionId]
+        ));
+        $cashSales = 0.0;
+        foreach ($payments as $p) if ($p['method'] === 'cash') $cashSales = r2($p['amount']);
+        $payouts = DB::all(
+            "SELECT p.*, a.name AS account_name FROM petty_cash_txns p LEFT JOIN accounts a ON a.id = p.account_id
+             WHERE p.cash_session_id = ? AND p.source = 'drawer' AND p.status = 'posted' ORDER BY p.id", [$sessionId]
+        );
+        $payoutTotal = r2(array_sum(array_map(fn ($p) => $p['txn_type'] === 'expense' ? (float) $p['amount'] : -(float) $p['amount'], $payouts)));
+        // Cash refunded now for receipts that belonged to an earlier day
+        $voidRefunds = r2(DB::value(
+            "SELECT COALESCE(SUM(p.amount),0) FROM payments p JOIN tickets t ON t.id = p.ticket_id
+             WHERE t.void_session_id = ? AND t.cash_session_id <> ? AND p.method = 'cash'", [$sessionId, $sessionId]
+        ));
+        $refunds = r2($voidRefunds + $returns['cash']);
+        $categories = DB::all(
+            "SELECT COALESCE(c.name, 'Uncategorized') AS category, SUM(i.qty * i.factor) AS qty, SUM(i.line_total) AS amount FROM ticket_items i
+             JOIN tickets t ON t.id = i.ticket_id JOIN items it ON it.id = i.item_id LEFT JOIN categories c ON c.id = it.category_id
+             WHERE t.cash_session_id = ? AND t.status = 'paid' AND i.status = 'active' GROUP BY c.name ORDER BY amount DESC", [$sessionId]
+        );
+        $grandBefore = r2(DB::value("SELECT COALESCE(SUM(total),0) FROM tickets WHERE status = 'paid' AND cash_session_id < ?", [$sessionId]));
+        $expected = r2((float) $s['opening_cash'] + $cashSales - $payoutTotal - $refunds);
+
+        return [
+            'session' => $s,
+            'sales' => $sales,
+            'voided' => ['cnt' => (int) $voided['cnt'], 'amount' => r2($voided['amount'])],
+            'cancelled' => $cancelled,
+            'returns' => $returns,
+            'discounts' => $discounts,
+            'payments' => $payments,
+            'categories' => $categories,
+            'payouts' => $payouts,
+            'cash' => [
+                'opening' => r2($s['opening_cash']), 'cash_sales' => $cashSales, 'payouts' => $payoutTotal, 'refunds' => $refunds,
+                'expected' => $s['status'] === 'closed' ? r2($s['expected_cash']) : $expected,
+                'counted' => $s['counted_cash'] === null ? null : r2($s['counted_cash']),
+                'variance' => $s['variance'] === null ? null : r2($s['variance']),
+            ],
+            'grand_total' => ['beginning' => $grandBefore, 'ending' => r2($grandBefore + $sales['net'])],
+        ];
+    }
+
+    /**
+     * Discounts given during the day, by discount name (whole-receipt and per-item discounts).
+     * Returns [['label', 'discount_type', 'cnt', 'amount'], ...].
+     */
+    private static function discountSummary(int $sessionId): array
+    {
+        $rows = array_merge(
+            DB::all(
+                "SELECT COALESCE(i.discount_name, i.discount_kind) AS label, i.discount_kind AS discount_type, COUNT(*) AS cnt, SUM(i.discount_amount) AS amount
+                 FROM ticket_items i JOIN tickets t ON t.id = i.ticket_id
+                 WHERE t.cash_session_id = ? AND t.status = 'paid' AND i.status = 'active' AND i.discount_kind IS NOT NULL AND t.discount_type NOT IN ('sc','pwd')
+                 GROUP BY COALESCE(i.discount_name, i.discount_kind), i.discount_kind", [$sessionId]
+            ),
+            DB::all(
+                "SELECT COALESCE(t.discount_name, t.discount_type) AS label, t.discount_type, COUNT(*) AS cnt,
+                        SUM(t.discount_amount - (SELECT COALESCE(SUM(i.discount_amount),0) FROM ticket_items i WHERE i.ticket_id = t.id AND i.status = 'active')) AS amount
+                 FROM tickets t WHERE t.cash_session_id = ? AND t.status = 'paid' AND t.discount_type <> 'none'
+                 GROUP BY COALESCE(t.discount_name, t.discount_type), t.discount_type", [$sessionId]
+            )
+        );
+        $out = [];
+        foreach ($rows as $r) {
+            $key = $r['label'];
+            $out[$key] ??= ['label' => $r['label'], 'discount_type' => $r['discount_type'], 'cnt' => 0, 'amount' => 0.0];
+            $out[$key]['cnt'] += (int) $r['cnt'];
+            $out[$key]['amount'] = r2($out[$key]['amount'] + (float) $r['amount']);
+        }
+        return array_values(array_filter($out, fn ($r) => $r['amount'] > 0));
+    }
+
+    /**
+     * End of day. $denominations = [denomination => count]; if empty, $countedCash is used.
+     * Posts cash short/over to the GL and stores the Z-reading snapshot.
+     */
+    public static function close(array $denominations = [], ?float $countedCash = null, ?string $notes = null): array
+    {
+        $s = self::requireOpen();
+        $open = (int) DB::value("SELECT COUNT(*) FROM tickets WHERE cash_session_id = ? AND status = 'open'", [$s['id']]);
+        if ($open > 0) throw HttpException::bad("There are still $open held sale(s). Complete or cancel them before closing the day.");
+        $counted = 0.0;
+        foreach ($denominations as $d => $q) $counted += (float) $d * (float) $q;
+        if (!$denominations && $countedCash !== null) $counted = $countedCash;
+        $counted = r2($counted);
+
+        DB::transaction(function () use ($s, $counted, $denominations, $notes) {
+            $expected = self::report((int) $s['id'])['cash']['expected'];
+            $variance = r2($counted - $expected);
+            $jeId = null;
+            if ($variance != 0) {
+                $jeId = Ledger::post($s['business_date'], 'Cash ' . ($variance < 0 ? 'short' : 'over') . ' - EOD ' . $s['business_date'], [
+                    ['key' => 'cash_on_hand', 'debit' => max($variance, 0), 'credit' => max(-$variance, 0)],
+                    ['key' => 'cash_short_over', 'debit' => max(-$variance, 0), 'credit' => max($variance, 0)],
+                ], 'pos_eod', (int) $s['id']);
+            }
+            $den = json_decode($s['denominations'] ?? '', true) ?: [];
+            $den['closing'] = $denominations;
+            DB::update('cash_sessions', (int) $s['id'], [
+                'status' => 'closed', 'closed_by' => Auth::id(), 'closed_at' => now(), 'expected_cash' => $expected,
+                'counted_cash' => $counted, 'variance' => $variance, 'denominations' => json_encode($den),
+                'notes' => trim(($s['notes'] ?? '') . ($notes ? ' | ' . $notes : ''), ' |') ?: null, 'journal_entry_id' => $jeId,
+            ]);
+            DB::update('cash_sessions', (int) $s['id'], ['z_data' => json_encode(self::report((int) $s['id']))]);
+            Audit::log('close_day', 'cash_session', (int) $s['id'], ['expected' => $expected, 'counted' => $counted, 'variance' => $variance]);
+        });
+        return self::report((int) $s['id']);
+    }
+}
