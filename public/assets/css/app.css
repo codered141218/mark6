@@ -346,3 +346,109 @@ dialog.modal form { display: flex; flex-direction: column; min-height: 0; max-he
 /* A closed <dialog> must stay hidden (the generic .modal rule above sets display:flex) */
 dialog.modal:not([open]) { display: none; }
 .checkbox input { flex-shrink: 0; }
+
+/* ===================================================================== M6 theme (the M5 Restaurant Suite look: Inter + Space Grotesk, gradient brand, glow login, collapsible sidebar, accent stat cards) */
+:root {
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-display: 'Space Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --brand: #ea580c;
+  --brand-hover: #c2410c;
+  --brand-grad: linear-gradient(135deg, #ff8f3f 0%, #f0501e 100%);
+  --brand-glow: 0 8px 20px rgba(240, 80, 30, .35);
+  --green-grad: linear-gradient(135deg, #22c55e 0%, #15803d 100%);
+  --side: #0b1220;
+  --side-2: #172033;
+  --side-text: #cbd5e1;
+  --bg: #f3f5f9;
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 6px 18px rgba(16, 24, 40, .06);
+}
+h1, h2, h3, .brand-name, .login-card h1, .stat-value, .ticket-totals .grand, .tile-price, .paid-change, .pay-stats .stat-value, .count-total, .z-summary b { font-family: var(--font-display); }
+h1 { font-size: 26px; letter-spacing: -.01em; }
+h3 { font-size: 16px; }
+
+/* buttons & inputs */
+.btn { border-radius: 10px; }
+.btn-primary { background: var(--brand-grad); border-color: transparent; box-shadow: var(--brand-glow); }
+.btn-primary:hover:not(:disabled) { background: var(--brand-grad); border-color: transparent; filter: brightness(1.06); }
+.btn-success { background: var(--green-grad); border-color: transparent; box-shadow: 0 8px 20px rgba(34, 197, 94, .28); }
+.btn-success:hover:not(:disabled) { background: var(--green-grad); border-color: transparent; filter: brightness(1.06); }
+.btn-danger { background: linear-gradient(135deg, #ef4444, #b91c1c); border-color: transparent; }
+.input, .dt-search { border-radius: 10px; border-color: #dde3ee; }
+.input:focus { outline: 3px solid rgba(240, 80, 30, .18); border-color: #f0501e; }
+.badge { padding: 3px 9px; }
+
+/* brand badge: gradient with a glossy top half, like the M5 icon */
+.brand-logo { position: relative; overflow: hidden; border-radius: 10px; background: var(--brand-grad); box-shadow: 0 6px 14px rgba(240, 80, 30, .4); font-family: var(--font-display); font-weight: 700; color: #fff; }
+.brand-logo::after { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 50%; background: linear-gradient(180deg, rgba(255, 255, 255, .28), rgba(255, 255, 255, 0)); pointer-events: none; }
+
+/* sidebar */
+.sidebar { width: 252px; }
+.brand { padding: 18px 14px 12px; gap: 12px; }
+.brand-name { font-size: 15px; }
+.brand-sub { text-transform: uppercase; letter-spacing: .14em; font-size: 10px; font-weight: 600; color: #64748b; margin-top: 2px; }
+.side-collapse { margin-left: auto; width: 28px; height: 28px; border-radius: 50%; border: none; background: var(--side-2); color: #94a3b8; cursor: pointer; font-size: 13px; flex-shrink: 0; }
+.side-collapse:hover { color: #fff; }
+.pos-link a { height: 46px; border-radius: 10px; background: var(--green-grad); box-shadow: 0 8px 20px rgba(34, 197, 94, .28); font-size: 14px; }
+.pos-link a:hover { background: var(--green-grad); filter: brightness(1.06); }
+.nav { padding: 6px 10px 16px; }
+.nav-group { margin-top: 16px; }
+.nav-group-title { display: flex; align-items: center; justify-content: space-between; cursor: pointer; letter-spacing: .14em; font-weight: 700; color: #64748b; padding: 0 10px 8px; user-select: none; }
+.nav-group-title::after { content: '▾'; font-size: 10px; opacity: .8; }
+.nav-group.collapsed .nav-group-title::after { content: '▸'; }
+.nav-group.collapsed a { display: none; }
+.nav a { padding: 9px 12px; border-radius: 10px; font-size: 14px; }
+.nav a.active { background: var(--brand-grad); box-shadow: 0 6px 16px rgba(240, 80, 30, .35); font-weight: 600; }
+.nav .ico { opacity: .75; }
+.nav a.active .ico { opacity: 1; }
+.side-user { border-top-color: #172033; }
+/* icons-only sidebar (the « button; remembered per device) */
+html.side-collapsed .sidebar { width: 70px; }
+html.side-collapsed .brand { flex-direction: column; gap: 10px; padding: 14px 10px 8px; }
+html.side-collapsed .brand > div, html.side-collapsed .brand-name, html.side-collapsed .brand-sub, html.side-collapsed .nav-group-title,
+html.side-collapsed .nav .lbl, html.side-collapsed .pos-link .lbl, html.side-collapsed .side-user { display: none; }
+html.side-collapsed .side-collapse { margin: 0; transform: rotate(180deg); }
+html.side-collapsed .pos-link { margin: 8px 10px 0; }
+html.side-collapsed .nav { padding: 6px 8px; }
+html.side-collapsed .nav a { justify-content: center; padding: 10px 0; }
+html.side-collapsed .nav-group.collapsed a { display: flex; }
+html.side-collapsed .nav .ico { width: auto; font-size: 16px; }
+@media (max-width: 860px) { .side-collapse { display: none; } html.side-collapsed .sidebar { width: 252px; } html.side-collapsed .brand > div, html.side-collapsed .nav-group-title, html.side-collapsed .nav .lbl, html.side-collapsed .pos-link .lbl, html.side-collapsed .side-user { display: block; } html.side-collapsed .nav .lbl { display: inline; } }
+
+/* cards & stat tiles */
+.card { border-color: #e8ecf3; }
+.card-head { padding: 14px 18px; }
+.stat { position: relative; overflow: hidden; padding: 16px 18px 14px; border-color: #e8ecf3; }
+.stat::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 4px; background: linear-gradient(90deg, #ff8f3f, #f0501e); }
+.stats > .stat:nth-child(6n+2)::before { background: linear-gradient(90deg, #fb923c, #f59e0b); }
+.stats > .stat:nth-child(6n+3)::before { background: linear-gradient(90deg, #60a5fa, #6366f1); }
+.stats > .stat:nth-child(6n+4)::before { background: linear-gradient(90deg, #34d399, #059669); }
+.stats > .stat:nth-child(6n+5)::before { background: linear-gradient(90deg, #2dd4bf, #0891b2); }
+.stats > .stat:nth-child(6n+6)::before { background: linear-gradient(90deg, #38bdf8, #0ea5e9); }
+.stats > .stat:nth-child(6n+7)::before { background: linear-gradient(90deg, #a5b4fc, #818cf8); }
+.stat-label { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #64748b; }
+.stat-value { font-size: 26px; margin-top: 6px; }
+.stat-sub { margin-top: 4px; }
+.stat-brand { background: var(--brand-grad); border-color: transparent; box-shadow: var(--brand-glow); }
+.stat-brand::before { display: none; }
+.stat-brand .stat-label { color: rgba(255, 255, 255, .85); }
+.hbar-fill { background: var(--brand-grad); }
+
+/* login & installer: dark grid with warm and cool glows, a glowing white card */
+.login-page { background-color: #0a1020;
+  background-image: radial-gradient(640px 460px at 14% 22%, rgba(249, 115, 22, .36), transparent 62%), radial-gradient(640px 480px at 86% 84%, rgba(8, 145, 178, .34), transparent 62%),
+    linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, .035) 1px, transparent 1px);
+  background-size: auto, auto, 40px 40px, 40px 40px; }
+.login-card { max-width: 430px; border-radius: 20px; padding: 36px 40px; box-shadow: 0 0 0 1px rgba(255, 255, 255, .06), 0 30px 80px rgba(0, 0, 0, .55), 0 0 70px rgba(255, 255, 255, .14); }
+.login-card .brand-logo { width: 56px; height: 56px; font-size: 19px; border-radius: 14px; margin-bottom: 18px; }
+.login-card h1 { font-size: 22px; text-transform: uppercase; letter-spacing: .01em; }
+.login-card .field-label { font-size: 13px; color: #334155; }
+.login-card .input { background: #eef2ff; border-color: #dfe5f5; height: 42px; }
+.login-card .btn-lg { height: 52px; font-size: 16px; font-weight: 700; }
+
+/* POS */
+.pos { background: #eef1f6; }
+.pos-top { background: var(--side); }
+.cat-btn { border-radius: 10px; }
+.tile { border-radius: 12px; }
+.ticket-actions .pay { font-family: var(--font-display); }

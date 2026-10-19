@@ -14,7 +14,11 @@ $business = App\Services\Settings::get('business_name', 'Mark6');
   <meta name="base-url" content="<?= e(url('/')) ?>">
   <title><?= e(($title ?? '') ? $title . ' · ' : '') ?><?= e($business) ?></title>
   <link rel="icon" href="<?= asset('img/icon.svg') ?>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap">
   <link rel="stylesheet" href="<?= asset('css/app.css') ?>">
+  <script>try { if (localStorage.getItem('mark6_sidebar') === 'collapsed') document.documentElement.classList.add('side-collapsed'); } catch (e) {}</script>
 </head>
 <body>
 <div class="app">
@@ -29,19 +33,20 @@ $business = App\Services\Settings::get('business_name', 'Mark6');
         <div class="brand-name"><?= e($business) ?></div>
         <div class="brand-sub">Retail Suite</div>
       </div>
+      <button class="side-collapse" type="button" data-collapse-sidebar title="Collapse / expand the menu">«</button>
     </div>
     <?php if (can('pos.access')): ?>
-      <div class="pos-link"><a href="<?= url('/pos') ?>">▶ Open POS / Cashier</a></div>
+      <div class="pos-link"><a href="<?= url('/pos') ?>" title="Open POS / Cashier">▶ <span class="lbl">Open POS / Cashier</span></a></div>
     <?php endif; ?>
     <nav class="nav">
       <?php foreach ($nav as $group => $items):
           $visible = array_filter($items, fn ($i) => can(...$i[3]));
           if (!$visible) continue; ?>
-        <div class="nav-group">
-          <div class="nav-group-title"><?= e($group) ?></div>
+        <div class="nav-group" data-nav-group="<?= e($group) ?>">
+          <div class="nav-group-title" title="Show / hide this group"><?= e($group) ?></div>
           <?php foreach ($visible as [$href, $label, $icon]):
-              $active = $href === '/' ? $path === '/' : ($path === $href || str_starts_with($path, $href . '/')); ?>
-            <a href="<?= url($href) ?>" class="<?= $active ? 'active' : '' ?>"><span class="ico"><?= $icon ?></span><?= e($label) ?></a>
+              $active = $href === '/' ? $path === '/' : ($path === $href || str_starts_with($path, strtok($href, '?') . '/')); ?>
+            <a href="<?= url($href) ?>" class="<?= $active ? 'active' : '' ?>" title="<?= e($label) ?>"><span class="ico"><?= $icon ?></span><span class="lbl"><?= e($label) ?></span></a>
           <?php endforeach; ?>
         </div>
       <?php endforeach; ?>

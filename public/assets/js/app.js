@@ -89,6 +89,27 @@
   };
   window.App = App;
 
+  // ------------------------------------------------------------------ sidebar: icons-only mode and collapsible groups (remembered per device)
+  const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } } };
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-collapse-sidebar]')) {
+      const on = document.documentElement.classList.toggle('side-collapsed');
+      store.set('mark6_sidebar', on ? 'collapsed' : 'open');
+    }
+    const title = e.target.closest('.nav-group-title');
+    if (title) {
+      const g = title.closest('[data-nav-group]');
+      const closed = g.classList.toggle('collapsed');
+      const state = JSON.parse(store.get('mark6_navgroups') || '{}');
+      state[g.dataset.navGroup] = closed ? 1 : 0;
+      store.set('mark6_navgroups', JSON.stringify(state));
+    }
+  });
+  try {
+    const state = JSON.parse(store.get('mark6_navgroups') || '{}');
+    $$('[data-nav-group]').forEach((g) => { if (state[g.dataset.navGroup] && !g.querySelector('a.active')) g.classList.add('collapsed'); });
+  } catch (e) { /* ignore */ }
+
   // ------------------------------------------------------------------ sidebar (mobile)
   document.addEventListener('click', (e) => {
     if (e.target.closest('[data-toggle-sidebar]')) $('#sidebar')?.classList.toggle('open');
