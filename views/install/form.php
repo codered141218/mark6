@@ -38,6 +38,7 @@
     <label class="field"><span class="field-label">Start with</span>
       <select class="input" name="sample"><?= options($samples, old('sample', 'none')) ?></select>
       <span class="field-hint">A sample catalog adds categories, items with barcodes, pack sizes and lots, suppliers and opening stock so you can try the POS right away. You can delete it later.</span></label>
+    <p class="muted small mt">Installing on a remote database takes <b>1–3 minutes</b> (the sample catalog adds a few hundred records). Leave this page open; it moves to the login page when done.</p>
     <button class="btn btn-primary btn-lg btn-block mt-lg" type="submit" <?= $pgsql ? '' : 'disabled' ?>>Install</button>
   </form>
 </div>

@@ -23,6 +23,7 @@ if (!isset(Installer::SAMPLES[$sample])) {
     fwrite(STDERR, "Unknown sample '$sample'. Use one of: " . implode(', ', array_keys(Installer::SAMPLES)) . "\n");
     exit(1);
 }
+set_time_limit(0);
 try {
     if (in_array('--create-db', $argv, true)) Installer::createDatabase(config('db.database'));
     Installer::install($sample);

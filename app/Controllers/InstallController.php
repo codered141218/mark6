@@ -52,6 +52,8 @@ class InstallController
         if (!isset(Installer::SAMPLES[$sample])) throw HttpException::bad('Choose a sample catalog');
 
         DB::configure($db);
+        set_time_limit(0);          // a remote database (Supabase) needs a few minutes of round trips
+        ignore_user_abort(true);    // keep going even if the browser gives up waiting
         try {
             if (!$envMode && $req->input('create_db') === '1') Installer::createDatabase($db['database']);
             Installer::install($sample, $adminPassword, $pin);
