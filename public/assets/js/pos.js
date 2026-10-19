@@ -395,6 +395,7 @@
     const s = S.session;
     const p = printerState();
     const top = [
+      '<span class="brand-logo pos-logo" title="Mark6 Retail Suite">M6</span>',
       `<span class="title">${esc(B.business.name)}</span>`,
       s ? `<span class="chip chip-open">● Day open · ${esc(fmtDate(s.business_date))}</span>` : '<span class="chip chip-closed">Day not open</span>',
       '<span class="grow"></span>',

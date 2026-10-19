@@ -15,6 +15,7 @@
 .pos-bottom { display: none; }
 
 /* ---------- top bar (one line; scrolls sideways when it does not fit) */
+.pos-top .pos-logo { width: 32px; height: 32px; font-size: 13px; color: #fff; margin-right: -2px; }   /* same badge as the sidebar brand */
 .pos-top { overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
 .pos-top::-webkit-scrollbar { display: none; }
 .pos-top > * { flex-shrink: 0; }
